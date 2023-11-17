@@ -1,0 +1,398 @@
+---
+title: "Iris Final Project"
+author: "Orel Adani"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if(!require(caret)) install.packages("caret") 
+if(!require(tidyverse)) install.packages("tidyverse") 
+if(!require(neuralnet)) install.packages("neuralnet") 
+if(!require(rpart)) install.packages("rpart") 
+if(!require(rpart.plot)) install.packages("rpart.plot") 
+if(!require(scales)) install.packages("scales") 
+
+
+library(caret)
+library(tidyverse)
+library(neuralnet)
+library(rpart)
+library(rpart.plot)
+library(scales)
+
+```
+
+# 1 Introduction
+
+Iris, introduced by Ronald Fisher in his 1936 paper The use of multiple measurements in taxonomic problems, contains three plant species (setosa, virginica, versicolor) and four features measured for each observation. These quantify the morphological variation of the iris flower in its three species, all measurements given in centimeters. Ronald measure the sepal and a petal of the flower to the width and length of iris species.
+Our goal is to create an algorithm that will determine by entering that 4 measurements which species we entered. 
+
+```{r out.width="1300px", echo=FALSE}
+
+# Define variable containing url
+url <- "https://miro.medium.com/v2/resize:fit:4800/format:webp/1*F-hk3qX6zgM6GNtJZ4qvoQ.png"
+
+knitr::include_graphics(url)
+
+```
+
+  \newpage
+
+## 1.1 Prepare the Data
+
+### 1.1.1 Looking at the data
+
+To understand the data more closely, we will take 2 lines of each species. We can clearly see that some measures has a unique range of numbers and others measures vaguely the same
+
+```{r }
+
+#show the data
+
+data("iris")
+
+colnames(iris)<-c("SL","SW","PL","PW","Species")
+
+rbind(
+head(iris,n=2),
+head(iris[which(iris$Species=="versicolor"),],n=2),
+head(iris[which(iris$Species=="virginica"),],n=2)
+)
+```
+
+ By grouping the species and measure the mean max and min for each field, Its very hard to determine which measurement belongs to the right species at the sepal samples.
+
+```{r warning=FALSE}
+iris %>% 
+  group_by(Species)  %>% summarize(AVG_SL=mean(SL),MIN_SL=min(SL),MAX_SL=max(SL),
+                                   AVG_SW=mean(SW),MIN_SW=min(SW),MAX_SW=max(SW)
+                                   )
+```
+
+
+```{r warning=FALSE, paged.print=TRUE}
+iris %>% 
+  group_by(Species)  %>% summarize(AVG_PL=mean(PL),MIN_PL=min(PL),MAX_PL=max(PL),                    
+                                   AVG_PW=mean(PW),MIN_PW=min(PW),MAX_PW=max(PW)
+                                   )
+```
+
+
+### 1.1.2 Field selection diagnostics
+
+In petal the situation is different, here we can see that each species has a different and unique range. For virginica there are overlapping cases with the versicolor but most of the observations are separated into a clear division. Maybe in the graph it will be more clear to see the difference between the two. 
+
+```{r warning=FALSE, out.width="1700px"}
+
+#plot all potential predictors
+pairs(iris[, 1:4], col = factor(iris$Species), pch = 19, oma=c(2,5,2,2), data = iris)
+par(xpd = TRUE)
+legend("topleft", fill = unique(iris$Species),cex=0.5, legend = c( levels(iris$Species)))
+```
+
+We found the appropriate fields to help us distinguish between the species. Receiving the relevant fields will help the algorithm to run faster and yet will not detract from the findings being accurate
+
+### 1.1.3 scaling the data
+
+Scaling is a technique for comparing data that isn’t measured in the same way. 
+In the machine learning algorithms if the values of the features are closer to each other.There is a chance which the algorithm get trained well and faster but when the data points or features values have high differences with each other, it will take more time to understand the data and the accuracy may be lower. 
+
+```{r warning=FALSE}
+#choose the right predictors
+
+iris<-iris %>%  select("PL","PW","Species")
+
+
+#scaling the data
+
+maxval<-apply(iris[,1:2],2, max)
+minval<-apply(iris[,1:2],2, min)
+
+iris_scale<-as.data.frame(scale(iris[,1:2],center=minval,scale=(maxval-minval)))
+iris_data_round<-cbind(round(iris_scale,4),Species=iris$Species)
+iris_data<-cbind(iris_scale,Species=iris$Species)
+
+head(iris_data_round)
+
+rbind(
+  head(iris_data_round,n=2),
+  head(iris_data_round[which(iris_data_round$Species=="versicolor"),],n=2),
+  head(iris_data_round[which(iris_data_round$Species=="virginica"),],n=2)
+)
+```
+
+By subtracting the values of each column by the matching “center” value from the argument we reserve the place of the value from his other values in the field and shrinking the range from 0-1. 
+As we can see, the graphs remain the same but the axes have changed. 
+
+```{r warning=FALSE, out.width="1700px"}
+
+pairs(iris_data[, 1:2], col = factor(iris_data$Species), pch = 19, oma=c(2,5,2,2), data = iris_data)
+par(xpd = TRUE)
+legend("topleft", fill = unique(iris_data$Species),cex=0.5, legend = c( levels(iris_data$Species)))
+
+
+```
+
+  \newpage
+
+## 1.2 Creating the "Test" and "Training" sets
+
+Partitioning the data into 2 sets: 70% of the data will be in the train set, and 30% in the Test set.
+We take a large sample of test because if we divide them to 3 species we left with 15 samples each. Taking less will leave us with poor number of test set. 
+
+
+```{r  warning=FALSE }
+
+#Partitioning the data to train and test
+
+set.seed(1, sample.kind="Rounding") # if using R 3.6 or later
+
+index_train <- createDataPartition(iris_data$Species, p=0.7, list = FALSE)
+
+test <-  iris_data[-index_train,]  
+train <- iris_data[index_train,]
+
+table(train$Species)
+
+```
+
+
+Getting `r length(test$Species)` samples of test and `r length(train$Species)` in the train set. each species will have equal number of samples.
+ 
+  \newpage
+
+# 2 Comparison between two models
+
+we going to test two models explaining their method and see how well they succeed to predict the species. Each has its advantages and disadvantages in such way that the performance of the algorithm is affected by them.
+
+-  **Decision Trees**  
+-  **Artificial Neural Network**
+  
+At the end of the analysis, we will be able to compare the different results and determine which one is more accurate in our diagnosis based on this database (different databases will need different methodologies)  
+  
+## 2.1 Decision Trees
+
+Decision Tree is a supervised machine learning algorithm which can be used to perform both classification and regression on complex data sets. Hence, it works for both continuous and categorical variables.
+Important basic tree Terminology is that the Root node represents an entire population or data set which gets divided into two or more pure sets (also known as homogeneous steps). It always contains a single input variable until we Leaf with terminal node that do not split further and contains the output variable.
+
+
+We are partitioning the predictor space into $J$  non-overlapping regions:
+
+$R{1}$ - Setosa
+
+$R{2}$ - Versicolor 
+
+$R{3}$ - Virginica 
+
+Then for any predictor  that falls within region we estimate $f(x)$ 
+minimizes the residual sum of squares (RSS):
+
+$$RSS = {\sum_{i:x{i}R{1}(j,s)}\left(\hat{y}_{i}-y_{R{1}}\right)^2}+{\sum_{i:x{i}R{2}(j,s)}\left(\hat{y}_{i}-y_{R{2}}\right)^2}+{\sum_{i:x{i}R{3}(j,s)}\left(\hat{y}_{i}-y_{R{3}}\right)^2}$$
+
+
+```{r warning=FALSE}
+#testing classification tree and plot it
+
+train_rpart <- rpart(Species~., data = train)
+
+rpart.plot(train_rpart)
+
+```
+
+To understand more deeply the intent of the model we draw **straight line** to each veritable that cut our set of observations into different segments.
+
+### 2.1.1 compute accuracy in rpart train
+
+```{r warning=FALSE}
+
+# compute accuracy in train
+
+Predict_rpart_train <-  predict(train_rpart, newdata = train, type = "class")
+
+table(train$Species, Predict_rpart_train)
+
+accuracy_rpart_train<- percent(mean(train$Species==Predict_rpart_train), accuracy = 0.1) 
+error_rate_rpart_train<-percent(mean(train$Species!=Predict_rpart_train), accuracy = 0.1) 
+```
+
+To summarize the results: 
+The accuracy of the decision tree saw fit to use our two variables that split the species and decided which group belonged to which species.The algorithm at the train set accuracy for that model is **`r accuracy_rpart_train`** Hence,  it's error rate stands at **`r error_rate_rpart_train`** .
+
+### 2.1.2 compute accuracy in rpart test
+
+With such promising findings we will apply the algorithm to the test set:
+
+```{r warning=FALSE}
+
+# compute accuracy in test
+
+Predict_rpart_tests <-  predict(train_rpart, newdata = test, type = "class")
+
+table(test$Species, Predict_rpart_tests)
+
+accuracy_rpart_test<- percent(mean(test$Species==Predict_rpart_tests), accuracy = 0.1) 
+error_rate_rpart_test<-percent(mean(test$Species!=Predict_rpart_tests), accuracy = 0.1) 
+```
+The algorithm results at the test set accuracy for that model is **`r accuracy_rpart_test`** Hence,  it's error rate stands at **`r error_rate_rpart_test`** . 
+
+As satisfying as the results may be,
+
+  **is it possible to create a more accurate model than this?**
+
+
+## 2.2 Artificial Neural Networks
+
+Their name and structure are inspired by the human brain, mimicking the way that biological neurons signal to one another.
+
+Artificial neural networks (ANNs) are comprised of a node layers, containing an input layer, one or more hidden layers, and an output layer. Each node, or artificial neuron, connects to another and has an associated weight and threshold.The output layer nodes are dependent on their immediately preceding hidden layers and those nodes are further derived from the input variables.
+in each neuron formula being uses
+$$ Neron_x=\sum_{i}\left(w_{i}x_{i}\right)+b$$ 
+and the answer move to the next layer neuron. it will be easier to see in a graph
+
+```{r warning=FALSE}
+
+#creating a neural net work on train_set to predict the Species
+ANN<-neuralnet:: neuralnet(Species  ~ ., train , hidden =c(4,2))
+
+plot(ANN,rep = "best")
+```
+
+By looking at Our model we see minor weight for each $b_i$ which indicates a greater weight to the neurons located in each layer.
+
+To understand more deeply the intent of the model we draw **line that curving in strategic places ** to each veritable and cut our set of observations into different segments.
+
+
+### 2.2.1 compute accuracy in ANN train
+
+
+```{r warning=FALSE}
+
+# compute accuracy in train
+
+pred_set = neuralnet:: compute(ANN,train[,c(1,2,3)])
+
+pred_df <- data_frame()
+
+n=c(length(train$Species))
+
+for (i in 1:n) {
+  pred_df<- rbind(pred_df, which.max(pred_set$net.result[i,]))
+}
+
+pred_df$X1L<- gsub(1,"setosa", pred_df$X1L)
+pred_df$X1L<- gsub(2,"versicolor", pred_df$X1L)
+pred_df$X1L<- gsub(3,"virginica", pred_df$X1L)
+
+prediction <- pred_df$X1L 
+reference <- train$Species
+
+accuracy_ann_train<-percent(mean(prediction == reference), accuracy = 0.1)
+error_ann_train<-percent(mean(prediction != reference), accuracy = 0.1)
+
+table(prediction, reference)
+
+```
+
+To summarize the results: 
+The accuracy of the artificial neural networks saw fit to use our two variables by entered them in the chain of neurons and multiplied by the weights and gives as the final output layer to determine which observation belonged to which species.The algorithm at the train set accuracy for that model is **`r accuracy_ann_train`** Hence,  it's error rate stands at **`r error_ann_train`** .
+
+### 2.2.2 compute accuracy in ANN test
+
+With such promising findings we will apply the algorithm to the test set:
+
+```{r warning=FALSE}
+
+# compute accuracy in test
+
+perd_test<- predict(ANN,test,type="class")
+reference_test <-test$Species
+
+validation_df <-data.frame(x=apply(perd_test,1,which.max))
+
+validation_df<-ifelse( validation_df$x==1,"setosa",
+                       ifelse(validation_df$x==2,"versicolor",
+                              "virginica"))
+
+table(reference_test,validation_df)
+
+accuracy_ann_test<-percent(mean(reference_test==validation_df) , accuracy = 0.1)
+error_ann_test<-percent(mean(reference_test!=validation_df) , accuracy = 0.1)
+```
+
+The algorithm results at the test set accuracy for that model is **`r accuracy_ann_test`** Hence,  it's error rate stands at **`r error_ann_test`** .
+
+
+  \newpage
+ 
+# 3 Results Comparison between Models
+
+To determine which model produces more accurate results,we can't rely on just one sample.
+Preparing a loop that will create a table in which all the results of the two models will store. 
+We will create 30 rows where each row is a random sample of the database by changing the seed set that responsible for mixing the data every round a loop starts.
+
+This process takes time because each loop generates all the models from scratch. But the findings shed light on the viability of the preferred model. (It's worth being patient)
+
+```{r warning=FALSE}
+#check the the best method 
+
+N_seeds<- c(1,12,123,1234,12345,123456,2089, 2676, 4831, 4261,132,2344,2334,3366,5465,
+    380,99,876,594,1998,35,45,67,878,23,8766,3401,31,84,96)
+
+models_results <- data_frame()
+models_results_final <- data_frame()
+
+for (i in 1:length(N_seeds)) {
+  set.seed(N_seeds[i]) # if using R 3.6 or later
+  #create data
+  index_train <- createDataPartition(iris_data$Species, p=0.7, list = FALSE)
+  test <-  iris_data[-index_train,]  
+  train <- iris_data[index_train,]
+  train_rpart <- rpart(Species~., data = train)
+  #rpart
+  Predict_rpart_tests <-  predict(train_rpart, newdata = test, type = "class")
+  accuracy_rpart_test<- mean(test$Species==Predict_rpart_tests)
+  error_rate_rpart_test<-mean(test$Species!=Predict_rpart_tests) 
+  #NNA
+  ANN<-neuralnet:: neuralnet(Species  ~ ., train , hidden =c(4,2))
+  perd_test<- predict(ANN,test,type="class")
+  reference_test <-test$Species
+  validation_df <-data.frame(x=apply(perd_test,1,which.max))
+  validation_df<-ifelse( validation_df$x==1,"setosa",
+                         ifelse(validation_df$x==2,"versicolor",
+                                "virginica"))
+  table(reference_test,validation_df)
+  accuracy_ann_test<-mean(reference_test==validation_df) 
+  error_ann_test<-mean(reference_test!=validation_df)
+  #summery
+   models_results <- bind_rows(tibble(N_seeds ,accuracy_rpart=accuracy_rpart_test,error_rate_rpart=error_rate_rpart_test,
+                                     accuracy_ann=accuracy_ann_test,error_ann=error_ann_test,
+                                     diff_accuracy=accuracy_ann-accuracy_rpart
+  ))
+  models_results_final<-rbind(models_results_final,models_results[i,])
+}
+summary_count<-models_results_final%>%summarise(count_0=length(which(diff_accuracy==0)),
+                                                count_p=length(which(diff_accuracy>0)),
+                                                count_n=length(which(diff_accuracy<0))
+                                                )
+
+models_results_final<-models_results_final %>% mutate(
+  accuracy_rpart= percent(accuracy_rpart, accuracy = 0.1),
+  error_rate_rpart= percent(error_rate_rpart , accuracy = 0.1),
+  accuracy_ann= percent(accuracy_ann , accuracy = 0.1),
+  error_ann= percent(error_ann , accuracy = 0.1),
+  diff_accuracy= percent(diff_accuracy, accuracy = 0.1),
+  )
+
+head(models_results_final)
+
+summary_count
+```
+
+# 4 Conclusion 
+
+The results obtained clearly showed that ANN gave a better success rate for predicting the species.
+As it got **`r summary_count$count_p`** out of **`r length(N_seeds)`** observations. 
+This makes sense because sometimes the curvature of the regression line can contain more observations than a limited straight line. In the existing database it was possible to see that the Decision Tree gave respectable success rates and we could be satisfied with this model for predicting the species.But it got **`r summary_count$count_n`** out of **`r length(N_seeds)`** observations.So, 
+there is no doubt that we had greater success with the ANN model.
